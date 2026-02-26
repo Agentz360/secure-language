@@ -1,6 +1,6 @@
-import {combineConfig, EditorState, Facet, StateField, Extension, Range} from "@codemirror/state"
+import {combineConfig, EditorState, Facet, Extension, Range} from "@codemirror/state"
 import {syntaxTree} from "./language"
-import {EditorView, Decoration, DecorationSet} from "@codemirror/view"
+import {EditorView, Decoration, DecorationSet, ViewPlugin, ViewUpdate} from "@codemirror/view"
 import {Tree, SyntaxNode, SyntaxNodeRef, NodeType, NodeProp} from "@lezer/common"
 
 export interface Config {
@@ -54,29 +54,45 @@ function defaultRenderMatch(match: MatchResult) {
   return decorations
 }
 
-const bracketMatchingState = StateField.define<DecorationSet>({
-  create() { return Decoration.none },
-  update(deco, tr) {
-    if (!tr.docChanged && !tr.selection) return deco
-    let decorations: Range<Decoration>[] = []
-    let config = tr.state.facet(bracketMatchingConfig)
-    for (let range of tr.state.selection.ranges) {
-      if (!range.empty) continue
-      let match = matchBrackets(tr.state, range.head, -1, config)
-        || (range.head > 0 && matchBrackets(tr.state, range.head - 1, 1, config))
-        || (config.afterCursor &&
-            (matchBrackets(tr.state, range.head, 1, config) ||
-             (range.head < tr.state.doc.length && matchBrackets(tr.state, range.head + 1, -1, config))))
-      if (match)
-        decorations = decorations.concat(config.renderMatch(match, tr.state))
+function bracketDeco(state: EditorState) {
+  let decorations: Range<Decoration>[] = []
+  let config = state.facet(bracketMatchingConfig)
+  for (let range of state.selection.ranges) {
+    if (!range.empty) continue
+    let match = matchBrackets(state, range.head, -1, config)
+      || (range.head > 0 && matchBrackets(state, range.head - 1, 1, config))
+      || (config.afterCursor &&
+        (matchBrackets(state, range.head, 1, config) ||
+          (range.head < state.doc.length && matchBrackets(state, range.head + 1, -1, config))))
+    if (match)
+      decorations = decorations.concat(config.renderMatch(match, state))
+  }
+  return Decoration.set(decorations, true)
+}
+
+const bracketMatcher = ViewPlugin.fromClass(class {
+  decorations: DecorationSet
+  paused = false
+  constructor(view: EditorView) {
+    this.decorations = bracketDeco(view.state)
+  }
+  update(update: ViewUpdate) {
+    if (update.docChanged || update.selectionSet || this.paused) {
+      if (update.view.composing) {
+        this.decorations = this.decorations.map(update.changes)
+        this.paused = true
+      } else {
+        this.decorations = bracketDeco(update.state)
+        this.paused = false
+      }
     }
-    return Decoration.set(decorations, true)
-  },
-  provide: f => EditorView.decorations.from(f)
+  }
+}, {
+  decorations: v => v.decorations
 })
 
 const bracketMatchingUnique = [
-  bracketMatchingState,
+  bracketMatcher,
   baseTheme
 ]
 
